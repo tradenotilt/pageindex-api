@@ -7,6 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y \
     git \
     libreoffice \
+    python3-tk \
+    ghostscript \
+    libxml2 \
+    libxslt1.1 \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 

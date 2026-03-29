@@ -65,7 +65,8 @@ def save_registry(data: dict) -> None:
     )
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ДЕРЕВА ---
-def get_skeleton(nodes):
+def get_skeleton(nodes, max_preview_length=300):
+    """Создает скелет документа с текстовыми превью для каждого узла."""
     if isinstance(nodes, dict):
         nodes = [nodes]
         
@@ -74,9 +75,20 @@ def get_skeleton(nodes):
         if not isinstance(n, dict):
             continue
             
-        new_n = {k: v for k, v in n.items() if k != 'text'}
-        if 'nodes' in new_n and new_n['nodes']:
-            new_n['nodes'] = get_skeleton(new_n['nodes'])
+        new_n = {k: v for k, v in n.items() if k not in ['text', 'nodes']}
+        
+        # Добавляем краткое превью текста для понимания содержимого
+        text = n.get("text", "")
+        if text and len(text) > max_preview_length:
+            preview = text[:max_preview_length] + "..."
+        else:
+            preview = text
+        
+        if preview.strip():
+            new_n["text_preview"] = preview.strip()
+        
+        if 'nodes' in n and n['nodes']:
+            new_n['nodes'] = get_skeleton(n['nodes'], max_preview_length)
         skeleton.append(new_n)
     return skeleton
 
@@ -189,6 +201,7 @@ def collect_leaf_nodes(nodes: list[dict]) -> list[dict]:
 
 
 def score_node_for_query(node: dict, query: str) -> int:
+    """Ключевое слово-скоринг для определения релевантности узла запросу."""
     text = " ".join(
         str(part)
         for part in [
@@ -204,18 +217,87 @@ def score_node_for_query(node: dict, query: str) -> int:
     return sum(1 for term in query_terms if term in text)
 
 
-def build_fallback_context(nodes: list[dict], query: str, limit: int = 5) -> str:
-    leaf_nodes = collect_leaf_nodes(nodes)
-    ranked_nodes = sorted(
-        leaf_nodes,
-        key=lambda node: (
-            score_node_for_query(node, query),
-            len(str(node.get("text", "") or "")),
-        ),
-        reverse=True,
+def score_node_for_query_semantic(node: dict, query: str, client: openai.OpenAI) -> float:
+    """Семантический скоринг с использованием embeddings для более точного определения релевантности."""
+    text = " ".join(
+        str(part)
+        for part in [
+            node.get("title", ""),
+            node.get("text", ""),
+            node.get("summary", ""),
+        ]
+        if part
     )
+    
+    if not text.strip():
+        return 0.0
+    
+    try:
+        # Ограничиваем длину текста для экономии токенов
+        text_for_embedding = text[:1000] if len(text) > 1000 else text
+        
+        # Получаем embeddings для запроса и текста узла
+        query_embedding = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=query
+        ).data[0].embedding
+        
+        text_embedding = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text_for_embedding
+        ).data[0].embedding
+        
+        # Вычисляем косинусное сходство
+        import numpy as np
+        query_array = np.array(query_embedding)
+        text_array = np.array(text_embedding)
+        
+        similarity = np.dot(query_array, text_array) / (
+            np.linalg.norm(query_array) * np.linalg.norm(text_array)
+        )
+        
+        return float(similarity)
+    except Exception as exc:
+        # Fallback к ключевое слово-скорингу при ошибке
+        logger.warning("Ошибка семантического скоринга: %s", exc)
+        return float(score_node_for_query(node, query))
 
-    selected = [node for node in ranked_nodes if score_node_for_query(node, query) > 0][:limit]
+
+def build_fallback_context(nodes: list[dict], query: str, limit: int = 5, use_semantic: bool = False, client: openai.OpenAI | None = None) -> str:
+    """Создает контекст из наиболее релевантных узлов.
+    
+    Args:
+        nodes: Список узлов документа
+        query: Поисковый запрос
+        limit: Максимальное количество узлов для включения
+        use_semantic: Использовать ли семантический скоринг
+        client: OpenAI клиент для семантического скоринга
+    """
+    leaf_nodes = collect_leaf_nodes(nodes)
+    
+    # Выбираем метод скоринга
+    if use_semantic and client:
+        ranked_nodes = sorted(
+            leaf_nodes,
+            key=lambda node: score_node_for_query_semantic(node, query, client),
+            reverse=True,
+        )
+    else:
+        ranked_nodes = sorted(
+            leaf_nodes,
+            key=lambda node: (
+                score_node_for_query(node, query),
+                len(str(node.get("text", "") or "")),
+            ),
+            reverse=True,
+        )
+
+    # Фильтруем узлы с положительным скором
+    if use_semantic and client:
+        selected = [node for node in ranked_nodes if score_node_for_query_semantic(node, query, client) > 0.3][:limit]
+    else:
+        selected = [node for node in ranked_nodes if score_node_for_query(node, query) > 0][:limit]
+    
     if not selected:
         selected = ranked_nodes[:limit]
 
@@ -323,6 +405,7 @@ async def search_doc(request: SearchRequest):
     
     search_prompt = (
         "Найди узлы в структуре, где может быть ответ на вопрос.\n"
+        "У каждого узла есть текстовое превью (text_preview) для понимания содержимого.\n"
         f"Вопрос: {request.query}\n"
         f"Структура: {json.dumps(skeleton, ensure_ascii=False)}\n"
         'Верни строго JSON: {"thinking": "почему", "node_list": ["id1", "id2"]}'
@@ -359,8 +442,13 @@ async def search_doc(request: SearchRequest):
 
         relevant_content = "\n\n".join(relevant_blocks)
 
+        # Улучшенный fallback с семантическим поиском
         if not relevant_content.strip():
-            relevant_content = build_fallback_context(nodes, request.query)
+            relevant_content = build_fallback_context(nodes, request.query, use_semantic=True, client=client)
+
+        # Если семантический поиск не помог, пробуем ключевое слово-скоринг
+        if not relevant_content.strip():
+            relevant_content = build_fallback_context(nodes, request.query, use_semantic=False)
 
         if not relevant_content.strip():
             relevant_content = (
