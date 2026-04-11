@@ -27,12 +27,15 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
+
 class SearchRequest(BaseModel):
     doc_id: str
     query: str
 
+
 class AgentRequest(BaseModel):
     query: str
+
 
 def ensure_storage() -> None:
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
@@ -46,6 +49,7 @@ def ensure_storage() -> None:
     if not tasks_path.exists():
         tasks_path.write_text("{}", encoding="utf-8")
 
+
 def load_registry() -> dict:
     registry_path = Path(settings.registry_file)
     if not registry_path.exists():
@@ -57,6 +61,7 @@ def load_registry() -> dict:
         return {}
     return data if isinstance(data, dict) else {}
 
+
 def save_registry(data: dict) -> None:
     registry_path = Path(settings.registry_file)
     registry_path.write_text(
@@ -64,47 +69,50 @@ def save_registry(data: dict) -> None:
         encoding="utf-8",
     )
 
+
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ДЕРЕВА ---
 def get_skeleton(nodes, max_preview_length=300):
     """Создает скелет документа с текстовыми превью для каждого узла."""
     if isinstance(nodes, dict):
         nodes = [nodes]
-        
+
     skeleton = []
     for n in nodes:
         if not isinstance(n, dict):
             continue
-            
-        new_n = {k: v for k, v in n.items() if k not in ['text', 'nodes']}
-        
+
+        new_n = {k: v for k, v in n.items() if k not in ["text", "nodes"]}
+
         # Добавляем краткое превью текста для понимания содержимого
         text = n.get("text", "")
         if text and len(text) > max_preview_length:
             preview = text[:max_preview_length] + "..."
         else:
             preview = text
-        
+
         if preview.strip():
             new_n["text_preview"] = preview.strip()
-        
-        if 'nodes' in n and n['nodes']:
-            new_n['nodes'] = get_skeleton(n['nodes'], max_preview_length)
+
+        if "nodes" in n and n["nodes"]:
+            new_n["nodes"] = get_skeleton(n["nodes"], max_preview_length)
         skeleton.append(new_n)
     return skeleton
+
 
 def get_node_map(nodes, node_map):
     if isinstance(nodes, dict):
         nodes = [nodes]
-        
+
     for n in nodes:
         if not isinstance(n, dict):
             continue
-            
-        if 'node_id' in n:
-            node_map[n['node_id']] = n
-        if 'nodes' in n and n['nodes']:
-            get_node_map(n['nodes'], node_map)
+
+        if "node_id" in n:
+            node_map[n["node_id"]] = n
+        if "nodes" in n and n["nodes"]:
+            get_node_map(n["nodes"], node_map)
     return node_map
+
 
 def get_node_text_with_children(node: dict) -> str:
     """Рекурсивно собирает текст узла и его потомков без дублирования страниц PDF."""
@@ -131,6 +139,7 @@ def get_node_text_with_children(node: dict) -> str:
 
     return text
 
+
 def extract_document_nodes(tree_data: object) -> list[dict]:
     if isinstance(tree_data, dict) and "result" in tree_data:
         tree_data = tree_data["result"]
@@ -141,7 +150,7 @@ def extract_document_nodes(tree_data: object) -> list[dict]:
     if isinstance(tree_data, dict):
         if "node_id" in tree_data:
             return [tree_data]
-            
+
         structure = tree_data.get("structure")
         if isinstance(structure, list):
             return [node for node in structure if isinstance(node, dict)]
@@ -151,6 +160,7 @@ def extract_document_nodes(tree_data: object) -> list[dict]:
             return [node for node in nodes if isinstance(node, dict)]
 
     raise HTTPException(status_code=500, detail="Неверный формат индекса документа")
+
 
 def get_openai_client() -> openai.OpenAI:
     if not settings.has_openai_key:
@@ -211,13 +221,17 @@ def score_node_for_query(node: dict, query: str) -> int:
         ]
         if part
     ).lower()
-    query_terms = [term for term in re.findall(r"[\wа-яА-ЯёЁ]+", query.lower()) if len(term) > 2]
+    query_terms = [
+        term for term in re.findall(r"[\wа-яА-ЯёЁ]+", query.lower()) if len(term) > 2
+    ]
     if not query_terms:
         return 0
     return sum(1 for term in query_terms if term in text)
 
 
-def score_node_for_query_semantic(node: dict, query: str, client: openai.OpenAI) -> float:
+def score_node_for_query_semantic(
+    node: dict, query: str, client: openai.OpenAI
+) -> float:
     """Семантический скоринг с использованием embeddings для более точного определения релевантности."""
     text = " ".join(
         str(part)
@@ -228,34 +242,39 @@ def score_node_for_query_semantic(node: dict, query: str, client: openai.OpenAI)
         ]
         if part
     )
-    
+
     if not text.strip():
         return 0.0
-    
+
     try:
         # Ограничиваем длину текста для экономии токенов
         text_for_embedding = text[:1000] if len(text) > 1000 else text
-        
+
         # Получаем embeddings для запроса и текста узла
-        query_embedding = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=query
-        ).data[0].embedding
-        
-        text_embedding = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text_for_embedding
-        ).data[0].embedding
-        
+        query_embedding = (
+            client.embeddings.create(model="text-embedding-3-small", input=query)
+            .data[0]
+            .embedding
+        )
+
+        text_embedding = (
+            client.embeddings.create(
+                model="text-embedding-3-small", input=text_for_embedding
+            )
+            .data[0]
+            .embedding
+        )
+
         # Вычисляем косинусное сходство
         import numpy as np
+
         query_array = np.array(query_embedding)
         text_array = np.array(text_embedding)
-        
+
         similarity = np.dot(query_array, text_array) / (
             np.linalg.norm(query_array) * np.linalg.norm(text_array)
         )
-        
+
         return float(similarity)
     except Exception as exc:
         # Fallback к ключевое слово-скорингу при ошибке
@@ -263,9 +282,15 @@ def score_node_for_query_semantic(node: dict, query: str, client: openai.OpenAI)
         return float(score_node_for_query(node, query))
 
 
-def build_fallback_context(nodes: list[dict], query: str, limit: int = 5, use_semantic: bool = False, client: openai.OpenAI | None = None) -> str:
+def build_fallback_context(
+    nodes: list[dict],
+    query: str,
+    limit: int = 5,
+    use_semantic: bool = False,
+    client: openai.OpenAI | None = None,
+) -> str:
     """Создает контекст из наиболее релевантных узлов.
-    
+
     Args:
         nodes: Список узлов документа
         query: Поисковый запрос
@@ -274,7 +299,7 @@ def build_fallback_context(nodes: list[dict], query: str, limit: int = 5, use_se
         client: OpenAI клиент для семантического скоринга
     """
     leaf_nodes = collect_leaf_nodes(nodes)
-    
+
     # Выбираем метод скоринга
     if use_semantic and client:
         ranked_nodes = sorted(
@@ -294,10 +319,16 @@ def build_fallback_context(nodes: list[dict], query: str, limit: int = 5, use_se
 
     # Фильтруем узлы с положительным скором
     if use_semantic and client:
-        selected = [node for node in ranked_nodes if score_node_for_query_semantic(node, query, client) > 0.3][:limit]
+        selected = [
+            node
+            for node in ranked_nodes
+            if score_node_for_query_semantic(node, query, client) > 0.3
+        ][:limit]
     else:
-        selected = [node for node in ranked_nodes if score_node_for_query(node, query) > 0][:limit]
-    
+        selected = [
+            node for node in ranked_nodes if score_node_for_query(node, query) > 0
+        ][:limit]
+
     if not selected:
         selected = ranked_nodes[:limit]
 
@@ -311,6 +342,7 @@ def build_fallback_context(nodes: list[dict], query: str, limit: int = 5, use_se
 
     return "\n\n".join(chunks)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_storage()
@@ -319,20 +351,29 @@ async def lifespan(app: FastAPI):
     app.state.task_manager = task_manager
     yield
 
+
 app = FastAPI(lifespan=lifespan, dependencies=[Depends(get_api_key)])
 
 # ==========================================
 # ЭНДПОИНТЫ API
 # ==========================================
 
+
 @app.post("/upload", status_code=202)
-async def upload_document(file: UploadFile = File(...)):
-    """1. Загрузка файла (Асинхронная очередь) - Только файл, без ручного описания"""
+async def upload_document(
+    file: UploadFile = File(...), file_name: Optional[str] = Form(None)
+):
+    """1. Загрузка файла с необязательным переопределением имени через file_name."""
     task_manager: TaskManager = app.state.task_manager
     file_bytes = await file.read()
-    safe_filename = file.filename or "document"
+    normalized_file_name = (file_name or "").strip()
+    source_file_name = (file.filename or "").strip()
+    safe_filename = normalized_file_name or source_file_name or "document"
+    safe_filename = Path(safe_filename).name
 
-    is_valid, error_message = task_manager.file_handler.validate_file(safe_filename, len(file_bytes))
+    is_valid, error_message = task_manager.file_handler.validate_file(
+        safe_filename, len(file_bytes)
+    )
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_message)
 
@@ -348,7 +389,7 @@ async def upload_document(file: UploadFile = File(...)):
     job_id = await task_manager.create_task(
         doc_id=doc_id,
         filename=safe_filename,
-        description="Генерация авто-описания...", # Временная заглушка
+        description="Генерация авто-описания...",  # Временная заглушка
         file_type=file_type,
         file_path=str(file_path),
     )
@@ -360,6 +401,7 @@ async def upload_document(file: UploadFile = File(...)):
         "message": "Документ добавлен в очередь на обработку",
     }
 
+
 @app.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str):
     """
@@ -367,11 +409,17 @@ async def delete_document(doc_id: str):
     """
     task_manager: TaskManager = app.state.task_manager
     success = await asyncio.to_thread(task_manager.delete_document, doc_id)
-    
+
     if success:
-        return {"status": "success", "message": f"Документ {doc_id} и все его данные успешно удалены."}
+        return {
+            "status": "success",
+            "message": f"Документ {doc_id} и все его данные успешно удалены.",
+        }
     else:
-        raise HTTPException(status_code=404, detail="Документ не найден или уже удален.")
+        raise HTTPException(
+            status_code=404, detail="Документ не найден или уже удален."
+        )
+
 
 @app.get("/tasks/{job_id}")
 async def get_task_status(job_id: str):
@@ -381,14 +429,17 @@ async def get_task_status(job_id: str):
         raise HTTPException(status_code=404, detail="Задача не найдена")
     return {"job_id": job_id, **task}
 
+
 @app.get("/tasks")
 async def list_tasks():
     task_manager: TaskManager = app.state.task_manager
     return {"tasks": await task_manager.get_all_tasks()}
 
+
 @app.get("/registry")
 async def list_registry():
     return load_registry()
+
 
 @app.post("/search")
 async def search_doc(request: SearchRequest):
@@ -402,7 +453,7 @@ async def search_doc(request: SearchRequest):
     client = get_openai_client()
     nodes = extract_document_nodes(tree_data)
     skeleton = get_skeleton(nodes)
-    
+
     search_prompt = (
         "Найди узлы в структуре, где может быть ответ на вопрос.\n"
         "У каждого узла есть текстовое превью (text_preview) для понимания содержимого.\n"
@@ -444,11 +495,15 @@ async def search_doc(request: SearchRequest):
 
         # Улучшенный fallback с семантическим поиском
         if not relevant_content.strip():
-            relevant_content = build_fallback_context(nodes, request.query, use_semantic=True, client=client)
+            relevant_content = build_fallback_context(
+                nodes, request.query, use_semantic=True, client=client
+            )
 
         # Если семантический поиск не помог, пробуем ключевое слово-скоринг
         if not relevant_content.strip():
-            relevant_content = build_fallback_context(nodes, request.query, use_semantic=False)
+            relevant_content = build_fallback_context(
+                nodes, request.query, use_semantic=False
+            )
 
         if not relevant_content.strip():
             relevant_content = (
@@ -466,10 +521,14 @@ async def search_doc(request: SearchRequest):
             messages=[{"role": "user", "content": answer_prompt}],
             temperature=0.1,
         )
-        return {"status": "success", "answer": response_answer.choices[0].message.content}
+        return {
+            "status": "success",
+            "answer": response_answer.choices[0].message.content,
+        }
     except Exception as exc:  # noqa: BLE001
         logger.exception("Ошибка поиска по документу %s", request.doc_id)
         raise HTTPException(status_code=500, detail=str(exc))
+
 
 @app.post("/vision")
 async def vision_rag(file: UploadFile = File(...), query: str = Form(...)):
@@ -488,20 +547,31 @@ async def vision_rag(file: UploadFile = File(...), query: str = Form(...)):
             image_bytes = pix.tobytes("jpeg")
             mime_type = "image/jpeg"
         except ImportError:
-            raise HTTPException(status_code=500, detail="Для чтения PDF установите PyMuPDF (pymupdf)")
+            raise HTTPException(
+                status_code=500, detail="Для чтения PDF установите PyMuPDF (pymupdf)"
+            )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Ошибка конвертации PDF: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Ошибка конвертации PDF: {str(e)}"
+            )
     else:
         image_bytes = file_bytes
 
     if not mime_type.startswith("image/"):
         if file.filename:
             suffix = Path(file.filename).suffix.lower()
-            mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+            mime_map = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+            }
             mime_type = mime_map.get(suffix, mime_type)
 
     if not mime_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Vision принимает только изображения с MIME type image/* или PDF")
+        raise HTTPException(
+            status_code=400,
+            detail="Vision принимает только изображения с MIME type image/* или PDF",
+        )
 
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
@@ -512,8 +582,16 @@ async def vision_rag(file: UploadFile = File(...), query: str = Form(...)):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": f"Изучи это изображение и ответь: {query}"},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}},
+                        {
+                            "type": "text",
+                            "text": f"Изучи это изображение и ответь: {query}",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_image}"
+                            },
+                        },
                     ],
                 }
             ],
@@ -522,6 +600,7 @@ async def vision_rag(file: UploadFile = File(...), query: str = Form(...)):
     except Exception as exc:  # noqa: BLE001
         logger.exception("Ошибка vision-запроса")
         raise HTTPException(status_code=500, detail=str(exc))
+
 
 @app.post("/ask_agent")
 async def ask_agent(request: AgentRequest):
@@ -563,13 +642,17 @@ async def ask_agent(request: AgentRequest):
 
         target_doc_id = route_result.get("doc_id")
         if not target_doc_id:
-            return {"answer": "К сожалению, в моей базе нет подходящего документа для ответа на этот вопрос."}
+            return {
+                "answer": "К сожалению, в моей базе нет подходящего документа для ответа на этот вопрос."
+            }
 
         search_request = SearchRequest(doc_id=str(target_doc_id), query=request.query)
         search_result = await search_doc(search_request)
 
         registry_entry = registry.get(str(target_doc_id))
-        filename = registry_entry.get("filename") if isinstance(registry_entry, dict) else None
+        filename = (
+            registry_entry.get("filename") if isinstance(registry_entry, dict) else None
+        )
 
         return {
             "status": "success",
@@ -579,7 +662,9 @@ async def ask_agent(request: AgentRequest):
         }
     except KeyError as exc:
         logger.exception("Выбранный документ отсутствует в реестре")
-        raise HTTPException(status_code=404, detail="Выбранный документ не найден") from exc
+        raise HTTPException(
+            status_code=404, detail="Выбранный документ не найден"
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Ошибка агентного поиска")
         raise HTTPException(status_code=500, detail=str(exc))
