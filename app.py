@@ -163,6 +163,27 @@ def extract_document_nodes(tree_data: object) -> list[dict]:
 
 
 def get_openai_client() -> openai.OpenAI:
+    """Создаёт OpenAI-совместимый клиент с учётом провайдера.
+
+    Поддерживаются:
+      - openai: оригинальный OpenAI (ключ из chatgpt_api_key)
+      - openai_compatible / opencode: любой OpenAI-совместимый API
+        (ключ из llm_api_key, base_url из llm_base_url)
+    """
+    provider = settings.llm_provider.lower()
+
+    if provider in ("openai_compatible", "opencode"):
+        if not settings.has_llm_key:
+            raise HTTPException(
+                status_code=500,
+                detail=f"LLM_API_KEY не задан для провайдера {provider}",
+            )
+        return openai.OpenAI(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+        )
+
+    # По умолчанию — оригинальный OpenAI
     if not settings.has_openai_key:
         raise HTTPException(status_code=500, detail="CHATGPT_API_KEY не задан")
     return openai.OpenAI(api_key=settings.chatgpt_api_key)
@@ -464,7 +485,7 @@ async def search_doc(request: SearchRequest):
 
     try:
         response_search = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.llm_chat_model,
             messages=[{"role": "user", "content": search_prompt}],
             temperature=0.1,
         )
@@ -517,7 +538,7 @@ async def search_doc(request: SearchRequest):
             f"Контекст: {relevant_content}"
         )
         response_answer = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.llm_chat_model,
             messages=[{"role": "user", "content": answer_prompt}],
             temperature=0.1,
         )
@@ -577,7 +598,7 @@ async def vision_rag(file: UploadFile = File(...), query: str = Form(...)):
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=settings.llm_chat_model,
             messages=[
                 {
                     "role": "user",
@@ -630,7 +651,7 @@ async def ask_agent(request: AgentRequest):
 
     try:
         response_route = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.llm_chat_model,
             messages=[{"role": "user", "content": route_prompt}],
             temperature=0.1,
         )

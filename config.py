@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     tasks_file: str = Field(default="./data/tasks.json", alias="TASKS_FILE")
     pageindex_script: str = Field(default="run_pageindex.py", alias="PAGEINDEX_SCRIPT")
 
+    # Мульти-провайдер LLM
+    llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
+    llm_api_key: str = Field(default="", alias="LLM_API_KEY")
+    llm_base_url: str = Field(default="", alias="LLM_BASE_URL")
+    llm_chat_model: str = Field(default="gpt-4o-mini", alias="LLM_CHAT_MODEL")
+
     allowed_extensions: Any = Field(
         default=".pdf,.doc,.docx,.md",
         alias="ALLOWED_EXTENSIONS",
@@ -64,6 +70,11 @@ class Settings(BaseSettings):
     def has_openai_key(self) -> bool:
         """Проверяет, задан ли ключ OpenAI."""
         return bool(self.chatgpt_api_key.strip())
+
+    @property
+    def has_llm_key(self) -> bool:
+        """Проверяет, задан ли ключ для текущего LLM-провайдера."""
+        return bool(self.llm_api_key.strip())
 
     @property
     def has_app_api_key(self) -> bool:

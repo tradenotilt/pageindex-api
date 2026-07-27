@@ -26,3 +26,6 @@ results/
 # OS
 Thumbs.db
 .DS_Store
+-e 
+# Backup files
+*.bak
